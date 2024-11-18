@@ -1,0 +1,9 @@
+# Python clutters
+__pycache__/
+*.py[cod]
+*$py.class
+.ipynb_checkpoints
+
+# Datasets and checkpoints
+datasets/
+checkpoints/
