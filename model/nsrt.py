@@ -4,45 +4,45 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 class NSRT(nn.Module):
-    def __init__(self, frame_channels, upscale_factor, context_window, n_features=32):
+    def __init__(self, frame_channels, upscale_factor, context_length, n_features):
         super().__init__()
         self.device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
         self.frame_channels = frame_channels
 
         self.curr_convolution = nn.Conv2d(frame_channels, n_features, kernel_size=3, padding='same')
-        self.reliable_warping = ReliableWarping(frame_channels, context_window, n_features)
-        self.reconstruction   = FrameRecurrentReconstruction(context_window, upscale_factor, n_features, out_channels=6)
+        self.reliable_warping = ReliableWarping(frame_channels, context_length, n_features)
+        self.reconstruction   = FrameRecurrentReconstruction(context_length, upscale_factor, n_features, out_channels=6)
 
-    def forward(self, x, motion_masks, warped_logits, lstm_state=None):
-        # x: current and all previous frame inputs in the context  (B, frame_channels * context_window, H, W)
-        # motion_masks: motion masks of all previous frames        (B, context_window - 1,              H, W)
+    def forward(self, x, motion_masks, warped_logits, lstm_state):
+        # x: current and all previous frame inputs in the context  (B, frame_channels * context_length, H, W)
+        # motion_masks: motion masks of all previous frames        (B, context_length - 1,              H, W)
         # warped_logits: warped logits from the previous frame     (B, 6, H * upscale_factor, W * upscale_factor)
 
         # Dataloader has already ensured that the previous frames are wraped and
         # the current frame's light components are tonemapped, see data.py
 
         x_current = self.curr_convolution(x[:, :self.frame_channels, :, :])  # (B, n_features,                        H, W)
-        x_context = self.reliable_warping(x, motion_masks)                   # (B, n_features * (context_window - 1), H, W)
+        x_context = self.reliable_warping(x, motion_masks)                   # (B, n_features * (context_length - 1), H, W)
         logits, state = self.reconstruction(x_current, x_context, warped_logits, lstm_state)
         return logits, state
 
 
 class ReliableWarping(nn.Module):
-    def __init__(self, frame_channels, context_window, n_features):
+    def __init__(self, frame_channels, context_length, n_features):
         super().__init__()
         self.frame_channels = frame_channels
-        self.context_window = context_window
+        self.context_length = context_length
 
         # Previous frames are concatenated with their motion mask, hence frame_channels + 1
         self.gated_conv = GatedConvolution(frame_channels + 1, n_features, kernel_size=3)
 
     def forward(self, x, motion_masks):
         # The parent model will pass parameters as is, so we need to extract the relevant tensors
-        # x: current and all previous frame inputs in the context  (B, frame_channels * context_window, H, W)
-        # motion_masks: motion masks of all previous frames        (B, context_window - 1,              H, W)
+        # x: current and all previous frame inputs in the context  (B, frame_channels * context_length, H, W)
+        # motion_masks: motion masks of all previous frames        (B, context_length - 1,              H, W)
 
         x_context = []
-        for i in range(1, self.context_window):  # skip the current frame
+        for i in range(1, self.context_length):  # skip the current frame
             x_prev = x[:, i * self.frame_channels:(i + 1) * self.frame_channels, :, :]
             x_mask = motion_masks[:, i - 1, :, :]
             x_gate = torch.cat([x_prev, x_mask], dim=1)
@@ -71,23 +71,23 @@ class GatedConvolution(nn.Module):
     
 
 class FrameRecurrentReconstruction(nn.Module):
-    def __init__(self, context_window, upscale_factor, n_features, out_channels):
+    def __init__(self, context_length, upscale_factor, n_features, out_channels):
         super().__init__()
 
         self.frame_recurrent = nn.Sequential(
             nn.PixelUnshuffle(upscale_factor),
             nn.Conv2d(out_channels * upscale_factor * upscale_factor, n_features, kernel_size=3, padding='same'),
         )
-        self.conv_lstm = ConvLSTM(n_features * context_window + n_features, 64, kernel_size=3)
+        self.conv_lstm = ConvLSTM(n_features * context_length + n_features, 64, kernel_size=3)
         self.unet_rcab = UNetRCAB(64, out_channels, upscale_factor, n_features)
 
     def forward(self, x_current, x_context, warped_logits, lstm_state):
         # x_current: high-level features of the current frame                   (B, n_features,                        H, W)
-        # x_context: gated features of all previous frames                      (B, n_features * (context_window - 1), H, W)
+        # x_context: gated features of all previous frames                      (B, n_features * (context_length - 1), H, W)
         # warped_logits: wraped previously reconstructed diffuse and speecular  (B, 6, H * upscale_factor, W * upscale_factor)
 
         x = self.frame_recurrent(warped_logits)          # (B, n_features,                               H, W)
-        x = torch.cat([x_current, x_context, x], dim=1)  # (B, n_features * context_window + n_features, H, W)
+        x = torch.cat([x_current, x_context, x], dim=1)  # (B, n_features * context_length + n_features, H, W)
         x_lstm = self.conv_lstm(x, lstm_state)           # (hidden, cell)
         logits = self.unet_rcab(x_lstm[0])               # (B, 6, H * upscale_factor, W * upscale_factor)
         return logits, x_lstm

@@ -1,6 +1,9 @@
 from argparse import ArgumentParser
 from configparser import ConfigParser
 
+import torch
+import torch.multiprocessing as mp
+
 from model.data import HDF5Dataset, get_dataloader
 from model.nsrt import NSRT
 from model.loss import Criterion
@@ -46,4 +49,6 @@ def get_argument_parser():
     return parser
 
 if __name__ == "__main__":
+    world_size = torch.cuda.device_count()
+    
     main()
