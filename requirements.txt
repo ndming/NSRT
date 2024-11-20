@@ -1,3 +1,4 @@
 h5py
+matplotlib
 ranger-adabelief==0.1.0
 adabelief-pytorch==0.2.0

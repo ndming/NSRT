@@ -17,27 +17,22 @@ class Criterion(nn.Module):
         # Weights for each task
         self.w_diff = 1.0
         self.w_spec = 1.0
-        self.w_auxiliary = 1.0
-        self.w_upsampled = 1.0
 
         self.spato_loss = PerceptualLossVGG16()
         self.tempo_loss = TemporalGradientLoss()
 
-    def forward(self, logits_tuple, target_tuple, warped_logits_tuple, warped_target_tuple, w_spatial=0.2):
-        logits_diff, logits_spec, logits_auxiliary, logits_upsampled = logits_tuple
-        target_diff, target_spec, target_auxiliary, target_upsampled = target_tuple
-        warped_logits_diff, warped_logits_spec, warped_logits_auxiliary, warped_logits_upsampled = warped_logits_tuple
-        warped_target_diff, warped_target_spec, warped_target_auxiliary, warped_target_upsampled = warped_target_tuple
+    def forward(self, logits, target, warped_logits, warped_target, w_spatial=0.2):
+        logits_diff, logits_spec = torch.split(logits, [3, 3], dim=1)
+        target_diff, target_spec = torch.split(target, [3, 3], dim=1)
+        warped_logits_diff, warped_logits_spec = torch.split(warped_logits, [3, 3], dim=1)
+        warped_target_diff, warped_target_spec = torch.split(warped_target, [3, 3], dim=1)
 
         loss_diff = self._compute_task_loss(logits_diff, target_diff, warped_logits_diff, warped_target_diff, w_spatial)
         loss_spec = self._compute_task_loss(logits_spec, target_spec, warped_logits_spec, warped_target_spec, w_spatial)
-        loss_auxiliary = self._compute_task_loss(logits_auxiliary, target_auxiliary, warped_logits_auxiliary, warped_target_auxiliary, w_spatial)
-        loss_upsampled = self._compute_task_loss(logits_upsampled, target_upsampled, warped_logits_upsampled, warped_target_upsampled, w_spatial)
-        
+
         # The total loss is the weighted sum of the spatial and temporal losses for each task
-        # Although we only use the reconstructed diffuse and specular components, the loss is defined based on
-        # multi-task learning, see https://doi.org/10.1145/3543870, Equation (3) for more details
-        return self.w_diff * loss_diff + self.w_spec * loss_spec + self.w_auxiliary * loss_auxiliary + self.w_upsampled * loss_upsampled
+        # See https://doi.org/10.1145/3543870, Equation (3) for more details
+        return self.w_diff * loss_diff + self.w_spec * loss_spec
     
     def _compute_task_loss(self, logits, target, warped_logits, warped_target, w_spatial):
         # Each task loss is a weighted sum of the spatial and temporal losses
