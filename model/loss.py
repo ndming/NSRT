@@ -7,7 +7,7 @@ from torchvision import models, transforms
 class Criterion(nn.Module):
     r"""The loss criterion for the NSRT model."""
 
-    def __init__(self):
+    def __init__(self, rank):
         r"""See [Temporally Stable Real-Time Joint Neural Denoising and Supersampling](https://doi.org/10.1145/3543870) 
             for more details on the loss function.
         """
@@ -18,7 +18,7 @@ class Criterion(nn.Module):
         self.w_diff = 1.0
         self.w_spec = 1.0
 
-        self.spato_loss = PerceptualLossVGG16()
+        self.spato_loss = PerceptualLossVGG16(rank)
         self.tempo_loss = TemporalGradientLoss()
 
     def forward(self, logits, target, warped_logits, warped_target, w_spatial=0.2):
@@ -46,7 +46,7 @@ class PerceptualLossVGG16(nn.Module):
         [Perceptual Losses for Real-Time Style Transfer and Super-Resolution](https://doi.org/10.48550/arXiv.1603.08155).
     """
 
-    def __init__(self, depth=16):
+    def __init__(self, rank, depth=16):
         r"""This is the drop-in replacement for the spatial loss, which is based on the VGG16 network.
         Here we're only interested in feature loss, not style transfer.
 
@@ -58,22 +58,27 @@ class PerceptualLossVGG16(nn.Module):
 
         # For VGG16, input images are expected to be zero-centered with respect to ImageNet's dataset
         self.vgg_transform = transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        self.register_buffer("mean", torch.tensor([0.485, 0.456, 0.406], device=rank).view(1, 3, 1, 1))
+        self.register_buffer("std",  torch.tensor([0.229, 0.224, 0.225], device=rank).view(1, 3, 1, 1))
 
         # Get the first `depth` layers of the VGG16 network
         self.vgg_extractor = models.vgg16(weights='IMAGENET1K_V1').features[:depth].eval()
+        self.vgg_extractor.to(rank)
         for param in self.vgg_extractor.parameters():
             param.requires_grad = False
 
     def forward(self, logits, target):
         # Preprocessing is based on Keras documentation: https://keras.io/api/applications/vgg/
         # Images are converted to BGR, but we don't resize the images to the default of 224x224
-        y_pred = self.vgg_transform(logits[:, [2, 1, 0], :, :])  # (B, C, H, W)
-        y_pred = self.vgg_extractor(y_pred)                      # (B, C, H, W)
+        y_pred = logits[:, [2, 1, 0], :, :]       # (B, 3, H, W)
+        y_pred = (y_pred - self.mean) / self.std  # (B, 3, H, W)
+        y_pred = self.vgg_extractor(y_pred)       # (B, 3, H, W)
 
         # We don't need gradients for the target
         with torch.no_grad():
-            y_true = self.vgg_transform(target[:, [2, 1, 0], :, :])  # (B, C, H, W)
-            y_true = self.vgg_extractor(y_true)                      # (B, C, H, W)
+            y_true = target[:, [2, 1, 0], :, :]       # (B, 3, H, W)
+            y_true = (y_true - self.mean) / self.std  # (B, 3, H, W)
+            y_true = self.vgg_extractor(y_true)       # (B, 3, H, W)
 
         # The original paper use MSE, but we find that L1-norm works better in practice
         return F.l1_loss(y_pred, y_true)

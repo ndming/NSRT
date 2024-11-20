@@ -3,14 +3,13 @@ import torch.nn.functional as F
 
 class Trainer:
     def __init__(self, rank, model, dataloader, optimizer, criterion):
-        self.rank = rank  # determine the device to use in multi-GPU training
-
+        self.rank  = rank  # determine the device to use in multi-GPU training
         self.model = model
         self.dataloader = dataloader
         self.optimizer = optimizer
         self.criterion = criterion
 
-    def step(self):
+    def step(self, on_loss_update=None):
         self.model.train()
 
         # Get all chunks in the batch
@@ -43,6 +42,7 @@ class Trainer:
                     warped_logits = torch.zeros_like(y_target)   # (B, 6, H * factor, W * factor)
                     warped_target = torch.zeros_like(y_target)   # (B, 6, H * factor, W * factor)
                 else:
+                    logits.detach_() # detach the previous logits to prevent backpropagation
                     scaled_curr2prev = F.interpolate(curr2prev, scale_factor=factor, mode='bilinear', align_corners=True)
                     target_curr2prev = target[:, frame_idx, -2:, ...]         # (B, 2, H * factor, W * factor)
                     warped_logits = warp_frame(logits, scaled_curr2prev)      # (B, 6, H * factor, W * factor)
@@ -71,7 +71,7 @@ class Trainer:
                         # Motion masks and relative motions
                         prev2curr += native[:, frame_idx - i - 1, -2:, ...]    # (B, 2, H, W)
                         threshold = self.dataloader.dataset.motion_threshold
-                        motion_masks[:, i, ...] = compute_motion_mask(curr2prev, prev2curr, threshold)
+                        motion_masks[:, i:i+1, ...] = compute_motion_mask(curr2prev, prev2curr, threshold)
                         curr2prev += native[:, frame_idx - i - 1, -4:-2, ...]
 
                     x = torch.cat([x, warped_prev], dim=1)
@@ -86,13 +86,17 @@ class Trainer:
 
             loss.backward()
             self.optimizer.step()
+
+            if on_loss_update is not None:
+                on_loss_update(batch, loss.item())
         
 
 class Validator:
-    def __init__(self, model, dataloader, criterion):
+    def __init__(self, rank, model, dataloader, criterion):
+        self.rank  = rank  # determine the device to use in multi-GPU training
         self.model = model
         self.dataloader = dataloader
-        self.criterion = criterion
+        self.criterion  = criterion
 
     def step(self):
         self.model.eval()

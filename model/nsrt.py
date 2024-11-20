@@ -6,8 +6,8 @@ import torch.nn.functional as F
 class NSRT(nn.Module):
     def __init__(self, frame_channels, upscale_factor, context_length, conv_features):
         super().__init__()
-        self.device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
         self.frame_channels = frame_channels
+        self.context_length = context_length
 
         self.curr_convolution = nn.Conv2d(frame_channels, conv_features, kernel_size=3, padding='same')
         self.reliable_warping = ReliableWarping(frame_channels, context_length, conv_features)
@@ -41,7 +41,7 @@ class ReliableWarping(nn.Module):
         x_context = []
         for i in range(1, self.context_length):  # skip the current frame
             x_prev = x[:, i * self.frame_channels:(i + 1) * self.frame_channels, ...]
-            x_mask = motion_masks[:, i - 1, ...]
+            x_mask = motion_masks[:, i - 1, ...].unsqueeze(1)
             x_gate = torch.cat([x_prev, x_mask], dim=1)
             x_gate = self.gated_conv(x_gate)
             x_context.append(x_gate)
@@ -52,8 +52,8 @@ class GatedConvolution(nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size):
         super().__init__()
 
-        self.conv = nn.Conv2d(in_channels, out_channels, kernel_size)
-        self.gate = nn.Conv2d(in_channels, out_channels, kernel_size)
+        self.conv = nn.Conv2d(in_channels, out_channels, kernel_size, padding=1)
+        self.gate = nn.Conv2d(in_channels, out_channels, kernel_size, padding=1)
         self.activation = nn.LeakyReLU(0.2, inplace=True)
         self.batch_norm = nn.BatchNorm2d(out_channels)
 

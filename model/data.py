@@ -128,6 +128,6 @@ def get_train_loaders(dataset, batch_size, n_workers, split=None):
     
     train_sampler = data.SubsetRandomSampler(train_indices)
     val_sampler   = data.SubsetRandomSampler(val_indices)
-    train_loader  = data.DataLoader(dataset, batch_size=batch_size, sampler=train_sampler, drop_last=True, pin_memory=True, num_workers=n_workers)
-    val_loader    = data.DataLoader(dataset, batch_size=batch_size, sampler=val_sampler,   drop_last=True, pin_memory=True, num_workers=n_workers)
+    train_loader  = data.DataLoader(dataset, batch_size=batch_size, sampler=train_sampler, pin_memory=True, num_workers=n_workers)
+    val_loader    = data.DataLoader(dataset, batch_size=batch_size, sampler=val_sampler,   pin_memory=True, num_workers=n_workers)
     return train_loader, val_loader
