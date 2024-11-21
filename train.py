@@ -57,27 +57,7 @@ def main(rank, world_size, config, n_workers):
     if checkpoint_path.exists():
         # Load all internal tensors to CPU, we wil move them to the correct device later
         checkpoint = torch.load(checkpoint_path, weights_only=True, map_location='cpu')
-
-        # Init the model first if training was OR being done on CPU
-        if checkpoint['cpu_checkpoint']:
-            model.load_state_dict(checkpoint['model_latest'])
-        elif world_size < 1:
-            # Unpack the model if it was saved under the DDP/DataParallel module
-            model.load_state_dict(unpack_model_state(checkpoint['model_latest']))
-
-        # Otherwise, wrap the model with the right parallel module
-        if world_size > 1:
-            if not checkpoint['ddp_checkpoint']:
-                console.print(f"[yellow] Checkpoint was trainined with DataParallel, it won't be guaranteed to work properly with DDP")
-            model = DDP(model.to(rank), device_ids=[rank])
-        elif world_size == 1:
-            if checkpoint['ddp_checkpoint']:
-                console.print(f"[yellow] Checkpoint was trainined with DDP, it won't be guaranteed to work properly with DataParallel")
-            model = DataParallel(model).to(rank)
-
-        # The CPU training path has been properly initialized
-        if world_size > 0:
-            model.load_state_dict(checkpoint['model_latest'])
+        model = init_model(checkpoint, model, rank)
         
         # Init optimizer and scheduler
         optimizer.load_state_dict(checkpoint['optimizer'])
@@ -85,8 +65,13 @@ def main(rank, world_size, config, n_workers):
 
         # Get the split indices for the training and validation sets
         split = checkpoint['train_indices'], checkpoint['val_indices']
-
         console.print(f"Resuming training from epoch [cyan]{scheduler.last_epoch + 1}")
+    else:
+        # Simnply move the model to the correct device if there is no checkpoint
+        if world_size > 1:
+            model = DDP(model.to(rank), device_ids=[rank])
+        elif world_size == 1:
+            model = DataParallel(model).to(rank)
 
     # Keep training until the total number of epochs is reached
     batch_size = config.getint('training', 'batch-size')
@@ -94,7 +79,7 @@ def main(rank, world_size, config, n_workers):
     while scheduler.last_epoch < n_epochs:
         # We initialize train dataloaders at every epoch iteration to shuffle the training and validation indices
         train_loader, val_loader, train_indices, val_indices = get_train_loaders(dataset, batch_size, n_workers, split)
-        trainer   = Trainer(rank, model, train_loader, optimizer, criterion)
+        trainer   = Trainer(rank, model, train_loader, optimizer, criterion, config.getfloat('training', 'spatial-weight'))
         validator = Validator(rank, model, val_loader, criterion)
 
         train_batch_count = len(train_loader)
@@ -143,6 +128,29 @@ def main(rank, world_size, config, n_workers):
     # Cleanup the distributed process group
     if world_size > 1:
         cleanup()
+
+
+def init_model(checkpoint, model, rank):
+    # Init the model first if training was OR being done on CPU
+    if checkpoint['cpu_checkpoint']:
+        model.load_state_dict(checkpoint['model_latest'])
+    elif world_size < 1:
+        # Unpack the model if it was saved under the DDP/DataParallel module
+        model.load_state_dict(unpack_model_state(checkpoint['model_latest']))
+
+    # Otherwise, wrap the model with the right parallel module
+    if world_size > 1:
+        if not checkpoint['ddp_checkpoint']:
+            console.print(f"[yellow] Checkpoint was trainined with DataParallel, it won't be guaranteed to work properly with DDP")
+        model = DDP(model.to(rank), device_ids=[rank])
+    elif world_size == 1:
+        if checkpoint['ddp_checkpoint']:
+            console.print(f"[yellow] Checkpoint was trainined with DDP, it won't be guaranteed to work properly with DataParallel")
+        model = DataParallel(model).to(rank)
+
+    # The CPU training path has been properly initialized
+    if world_size > 0:
+        model.load_state_dict(checkpoint['model_latest'])
 
 
 def setup(rank, world_size):

@@ -7,7 +7,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from torchmetrics.image import StructuralSimilarityIndexMeasure, PeakSignalNoiseRatio
 
 class Trainer:
-    def __init__(self, rank, model, dataloader, optimizer, criterion):
+    def __init__(self, rank, model, dataloader, optimizer, criterion, spatial_weight):
         self.rank  = rank  # determine the device to use in multi-GPU training
         self.model = model
         self.dataloader = dataloader
@@ -16,6 +16,7 @@ class Trainer:
 
         self.context_length = model.module.context_length if isinstance(model, (DDP, DataParallel)) else model.context_length
         self.frame_channels = model.module.frame_channels if isinstance(model, (DDP, DataParallel)) else model.frame_channels
+        self.spatial_weight = spatial_weight
 
     def step(self, on_loss_update=None):
         self.model.train()
@@ -100,7 +101,7 @@ class Trainer:
                 lstm_state = (lstm_state[0].detach(), lstm_state[1].detach())
 
                 # Accumulate the loss
-                w_spatial = 0.2 if frame_idx >= prev_count else 1.0
+                w_spatial = self.spatial_weight if frame_idx >= prev_count else 1.0
                 losses.append(self.criterion(logits, y_target, warped_logits, warped_target, w_spatial))
 
             loss = sum(losses) / chunk_size
