@@ -8,10 +8,10 @@ import h5py
 class HDF5Dataset(data.Dataset):
     def __init__(
             self, file, native_resolution, target_resolution, motion_threshold,
-            patch_size, spatial_stride, chunk_size, temporal_stride, train=True):
+            patch_size, spatial_stride, chunk_size, temporal_stride, 
+            train=True, on_detect_nan=None):
         super().__init__()
-        file_path = Path(file)
-        self.name = file_path.stem
+        self.path = Path(file)
         self.hdf5 = h5py.File(file, 'r')
 
         self.native_resolution = native_resolution
@@ -23,13 +23,14 @@ class HDF5Dataset(data.Dataset):
         self.spatial_stride = spatial_stride
         self.chunk_size = chunk_size
         self.temporal_stride = temporal_stride
+
         self.train = train
+        self.on_detect_nan = on_detect_nan
 
         n_patches_width, n_patches_height = self._count_patches()
         self.patches_per_frame   = n_patches_width * n_patches_height if train else 1
         self.chunks_per_sequence = (self.hdf5.attrs['frames-per-sequence'] - chunk_size) // temporal_stride + 1
         self.frames_per_sequence = self.hdf5.attrs['frames-per-sequence']
-        # self.channels_per_frame  = 3 + 3 + 3 + 1 + 4  # diffuse, specular, normal, depth, vector
 
     def __len__(self):
         sequence_count = self.hdf5.attrs['train-sequences'] if self.train else self.hdf5.attrs['test-sequences']
@@ -52,8 +53,21 @@ class HDF5Dataset(data.Dataset):
             frame_idx = chunk_idx * self.temporal_stride + i
             native_frame = self.hdf5[f'{self.native_resolution}/{set}/seq-{seq_idx:0{s_digits}d}/frame-{frame_idx:0{f_digits}d}']
             target_frame = self.hdf5[f'{self.target_resolution}/{set}/seq-{seq_idx:0{s_digits}d}/frame-{frame_idx:0{f_digits}d}']
-            native_chunk.append(self._populate_native_frame(native_frame, patch_idx))  # append (14, H, W)
-            target_chunk.append(self._populate_target_frame(target_frame, patch_idx))  # append ( 8, H, W)
+            native_frame = self._populate_native_frame(native_frame, patch_idx)  # (14, H, W)
+            target_frame = self._populate_target_frame(target_frame, patch_idx)  # ( 8, H, W)
+
+            if torch.isnan(native_frame).any() or torch.isinf(native_frame).any():
+                if self.on_detect_nan:
+                    self.on_detect_nan(seq_idx, frame_idx, self.train, self.native_resolution)
+                native_frame = torch.nan_to_num(native_frame, nan=1.0, posinf=0.0, neginf=0.0)
+            
+            if torch.isnan(target_frame).any() or torch.isinf(target_frame).any():
+                if self.on_detect_nan:
+                    self.on_detect_nan(seq_idx, frame_idx, self.train, self.target_resolution)
+                target_frame = torch.nan_to_num(target_frame, nan=1.0, posinf=0.0, neginf=0.0)
+
+            native_chunk.append(native_frame)
+            target_chunk.append(target_frame)
 
         return torch.stack(native_chunk, dim=0), torch.stack(target_chunk, dim=0)
 
@@ -125,9 +139,12 @@ def get_train_loaders(dataset, batch_size, n_workers, split=None):
         train_indices, val_indices = indices[:train_size], indices[train_size:]
     else:
         train_indices, val_indices = split
+        train_indices = train_indices[torch.randperm(len(train_indices))]
+        val_indices = val_indices[torch.randperm(len(val_indices))]
+
     
     train_sampler = data.SubsetRandomSampler(train_indices)
     val_sampler   = data.SubsetRandomSampler(val_indices)
     train_loader  = data.DataLoader(dataset, batch_size=batch_size, sampler=train_sampler, pin_memory=True, num_workers=n_workers)
     val_loader    = data.DataLoader(dataset, batch_size=batch_size, sampler=val_sampler,   pin_memory=True, num_workers=n_workers)
-    return train_loader, val_loader
+    return train_loader, val_loader, train_indices, val_indices

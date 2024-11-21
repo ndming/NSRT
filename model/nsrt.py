@@ -184,10 +184,10 @@ class ResidualChannelAttention(nn.Module):
 
         self.residual = nn.Sequential(
             nn.Conv2d(in_channels, in_channels, kernel_size, padding='same'),
-            # nn.BatchNorm2d(in_channels),
+            nn.BatchNorm2d(in_channels),
             nn.ReLU(inplace=True),
             nn.Conv2d(in_channels, in_channels, kernel_size, padding='same'),
-            # nn.BatchNorm2d(in_channels),
+            nn.BatchNorm2d(in_channels),
             ChannelAttention(in_channels, reduction),
         )
 
