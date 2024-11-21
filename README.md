@@ -1,3 +1,23 @@
+# Neural Supersampling with Radiance Demodulation using Transformer
+
+## Environment
+Model implementation uses Pytorch. Training and testing are guaranteed to run on Linux with:
+- Pytorch `2.5.1`
+- CUDA `12.1`
+
+See `requirements.txt` for additional required package.
+
+## Dataset
+TODO
+
+## Training
+
+```
+python train.py --config path/to/train.ini
+```
+
+### Training configuraions
+
 ```ini
 [dataset]
 file = datasets/bistro.hdf5
@@ -14,10 +34,10 @@ checkpoint = ""       # from which checkpoint to resume training
 epochs = 400          # the number of epochs (including checkpoint's trained epochs) after which the training will stop
 patch-size = 80       # training is performed on square patches cropped from the input frames, not the whole frame
 spatial-stride = 60   # this defines the overlap between patches to crop from the input frames
+spatial-weight = 0.8  # the spatial weight in the loss computation, must be in [0, 1]
 chunk-size = 8        # for recurrent training, we load a chunk of consecutive frames to process
 temporal-stride = 4   # this defines the overlap between chunks when extracting from a traning sequence
 batch-size = 8        # a training batch contains batch-size chunks of consecutive patches
-num-workers = 8       # number of workers for data loading
 
 [model]
 convo-features = 32   # number of intermediate feature maps accross convolutional layers
