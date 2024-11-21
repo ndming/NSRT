@@ -1,5 +1,6 @@
 from argparse import ArgumentParser
 from configparser import ConfigParser
+from pathlib import Path
 
 import os, torch
 import torch.distributed as dist
@@ -11,9 +12,7 @@ from model.data import HDF5Dataset, get_train_loaders
 from model.nsrt import NSRT
 from model.loss import Criterion
 from model.step import Trainer, Validator
-
 from utils import get_optimizer, write_inference, write_checkpoint, gen_id, unpack_model_state
-from pathlib import Path
 
 from rich.progress import Progress, BarColumn, TextColumn
 from rich.console import Console
@@ -79,8 +78,10 @@ def main(rank, world_size, config, n_workers):
     while scheduler.last_epoch < n_epochs:
         # We initialize train dataloaders at every epoch iteration to shuffle the training and validation indices
         train_loader, val_loader, train_indices, val_indices = get_train_loaders(dataset, batch_size, n_workers, split)
-        trainer   = Trainer(rank, model, train_loader, optimizer, criterion, config.getfloat('training', 'spatial-weight'))
-        validator = Validator(rank, model, val_loader, criterion)
+
+        spatial_weight = config.getfloat('training', 'spatial-weight')
+        trainer   = Trainer(rank, model, train_loader, optimizer, criterion, spatial_weight)
+        validator = Validator(rank, model, val_loader, criterion, spatial_weight)
 
         train_batch_count = len(train_loader)
         val_batch_count   = len(val_loader)
@@ -167,16 +168,16 @@ def cleanup():
 if __name__ == "__main__":
     parser = ArgumentParser(description="Train the NSRT model")
     parser.add_argument(
-        '--config', type=str, required=True, metavar='FILE',
+        '-c', '--config', type=str, required=True, metavar='',
         help="which file to read training configurations from")
     parser.add_argument(
-        '-s', '--seed', type=int, default=0, metavar="",
+        '-s', '--seed', type=int, default=0, metavar='',
         help="random seed for reproducibility")
     parser.add_argument(
-        '-d', '--n-gpus', type=int, default=1, metavar="",
-        help="number of CUDA devices to use")
+        '-d', '--n-gpus', type=int, default=1, metavar='',
+        help="number of GPU devices to use, 0 for CPU")
     parser.add_argument(
-        '-n', '--num-workers', type=int, default=8, metavar="",
+        '-n', '--num-workers', type=int, default=8, metavar='',
         help="number of workers for data loading")
     
     # Get training configurations

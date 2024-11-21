@@ -17,7 +17,7 @@ class HDF5Dataset(data.Dataset):
         self.native_resolution = native_resolution
         self.target_resolution = target_resolution
         self.upsampling_factor = int(target_resolution[:-1]) // int(native_resolution[:-1])  # 900p / 225p = 4
-        self.motion_threshold  = motion_threshold
+        self.motion_threshold  = motion_threshold  # save this for Trainer and Validator
 
         self.patch_size = patch_size
         self.spatial_stride = spatial_stride
@@ -138,7 +138,6 @@ def get_train_loaders(dataset, batch_size, n_workers, split=None):
         train_indices, val_indices = split
         train_indices = train_indices[torch.randperm(len(train_indices))]
         val_indices = val_indices[torch.randperm(len(val_indices))]
-
     
     train_sampler = data.SubsetRandomSampler(train_indices)
     val_sampler   = data.SubsetRandomSampler(val_indices)
