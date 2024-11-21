@@ -3,6 +3,10 @@ from ranger_adabelief import RangerAdaBelief
 from torch.optim import Optimizer, AdamW, SGD
 from torch.optim.lr_scheduler import LRScheduler, StepLR, ExponentialLR
 
+from torch.nn import DataParallel
+from torch.nn.parallel import DistributedDataParallel as DDP
+from collections import OrderedDict
+
 import torch
 import OpenEXR
 import Imath
@@ -93,14 +97,19 @@ def write_inference(logits, target, output_path):
     })
 
 
-def write_checkpoint(model, optimizer, scheduler, epoch, avg_train_loss, avg_loss, train_indices, val_indices, output_path):
-    r"""Write the model's state and optimizer's state to a checkpoint file.
-    """
+def unpack_model_state(state_dict):
+    unpacked_state = OrderedDict()
+    for k, v in state_dict.items():
+        name = k[7:]   # remove 'module.' of DataParallel/DistributedDataParallel
+        unpacked_state[name] = v
+    return unpacked_state
+
+
+def write_checkpoint(model, optimizer, scheduler, avg_train_loss, avg_loss, avg_ssim, avg_psnr, train_indices, val_indices, output_path):
     state = {
         'model_latest': model.state_dict(),
         'optimizer': optimizer.state_dict(),
         'scheduler': scheduler.state_dict(),
-        'epoch': epoch,
         'train_indices': train_indices,
         'val_indices': val_indices,
     }
@@ -110,14 +119,19 @@ def write_checkpoint(model, optimizer, scheduler, epoch, avg_train_loss, avg_los
         state['model_best'] = model.state_dict()
         state['val_losses'] = [avg_loss]
         state['train_losses'] = [avg_train_loss]
+        state['avg_ssims'] = [avg_ssim]
+        state['avg_psnrs'] = [avg_psnr]
+        state['cpu_checkpoint'] = not isinstance(model, (DDP, DataParallel))
+        state['ddp_checkpoint'] = isinstance(model, DDP)
     else:
         checkpoint = torch.load(output_path, weights_only=True)
         val_losses = checkpoint['val_losses']
-        train_losses = checkpoint['train_losses']
         if avg_loss < min(val_losses):
             state['model_best'] = model.state_dict()
         state['val_losses'] = val_losses + [avg_loss]
-        state['train_losses'] = train_losses + [avg_train_loss]
+        state['train_losses'] = checkpoint['train_losses'] + [avg_train_loss]
+        state['avg_ssims'] = checkpoint['avg_ssims'] + [avg_ssim]
+        state['avg_psnrs'] = checkpoint['avg_psnrs'] + [avg_psnr]
 
     torch.save(state, output_path)
 

@@ -126,9 +126,6 @@ class HDF5Dataset(data.Dataset):
         n_patches_along_width  = (width  - self.patch_size) // self.spatial_stride + 1
         n_patches_along_height = (height - self.patch_size) // self.spatial_stride + 1
         return n_patches_along_width, n_patches_along_height
-    
-    def __del__(self):
-        self.hdf5.close()
 
 
 def get_train_loaders(dataset, batch_size, n_workers, split=None):

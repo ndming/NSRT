@@ -12,7 +12,7 @@ from model.nsrt import NSRT
 from model.loss import Criterion
 from model.step import Trainer, Validator
 
-from utils import get_optimizer, write_inference, write_checkpoint, gen_id
+from utils import get_optimizer, write_inference, write_checkpoint, gen_id, unpack_model_state
 from pathlib import Path
 
 from rich.progress import Progress, BarColumn, TextColumn
@@ -20,8 +20,11 @@ from rich.console import Console
 
 console = Console()
 
-def main(rank, world_size, config, n_dataload_workers):
-    # Initialize the distributed process group
+def main(rank, world_size, config, n_workers):
+    # world_size = number of GPUs (0: CPU, 1: Single GPU (DataParallel), >1: Multi-GPU (DistributedDataParallel))
+    # rank will be the GPU index if world_size > 2, otherwise it will be either "cuda", "mps" or "cpu"
+
+    # Initialize the distributed process group if using DDP
     if world_size > 1:
         setup(rank, world_size)
 
@@ -49,61 +52,89 @@ def main(rank, world_size, config, n_dataload_workers):
 
     checkpoint_path = config.get('training', 'checkpoint')
     checkpoint_path = Path(f"checkpoints/{dataset.path.stem}-{gen_id()}.pth") if not checkpoint_path else Path(checkpoint_path)
-    
-    split = None
+    split = None  # will be intialized if a checkpoint file at the path is found
+
     if checkpoint_path.exists():
-        checkpoint = torch.load(checkpoint_path, weights_only=True)
-        model.load_state_dict(checkpoint['model_latest'])
+        # Load all internal tensors to CPU, we wil move them to the correct device later
+        checkpoint = torch.load(checkpoint_path, weights_only=True, map_location='cpu')
+
+        # Init the model first if training was OR being done on CPU
+        if checkpoint['cpu_checkpoint']:
+            model.load_state_dict(checkpoint['model_latest'])
+        elif world_size < 1:
+            # Unpack the model if it was saved under the DDP/DataParallel module
+            model.load_state_dict(unpack_model_state(checkpoint['model_latest']))
+
+        # Otherwise, wrap the model with the right parallel module
+        if world_size > 1:
+            if not checkpoint['ddp_checkpoint']:
+                console.print(f"[yellow] Checkpoint was trainined with DataParallel, it won't be guaranteed to work properly with DDP")
+            model = DDP(model.to(rank), device_ids=[rank])
+        elif world_size == 1:
+            if checkpoint['ddp_checkpoint']:
+                console.print(f"[yellow] Checkpoint was trainined with DDP, it won't be guaranteed to work properly with DataParallel")
+            model = DataParallel(model).to(rank)
+
+        # The CPU training path has been properly initialized
+        if world_size > 0:
+            model.load_state_dict(checkpoint['model_latest'])
+        
+        # Init optimizer and scheduler
         optimizer.load_state_dict(checkpoint['optimizer'])
         scheduler.load_state_dict(checkpoint['scheduler'])
-        split = checkpoint['train_indices'], checkpoint['val_indices']
-        print(f"Resuming training from epoch {checkpoint['epoch'] + 1}")
 
-    if world_size > 1:
-        model = DDP(model.to(rank), device_ids=[rank])
-    elif world_size == 1:
-        model = DataParallel(model).to(rank)
+        # Get the split indices for the training and validation sets
+        split = checkpoint['train_indices'], checkpoint['val_indices']
+
+        console.print(f"Resuming training from epoch [cyan]{scheduler.last_epoch + 1}")
 
     # Keep training until the total number of epochs is reached
-    batch_size=config.getint('training', 'batch-size')
-    n_epochs = config.getint('training', 'epochs')
+    batch_size = config.getint('training', 'batch-size')
+    n_epochs   = config.getint('training', 'epochs')
     while scheduler.last_epoch < n_epochs:
-        train_loader, val_loader, train_indices, val_indices = get_train_loaders(dataset, batch_size, n_dataload_workers, split)
+        # We initialize train dataloaders at every epoch iteration to shuffle the training and validation indices
+        train_loader, val_loader, train_indices, val_indices = get_train_loaders(dataset, batch_size, n_workers, split)
+        trainer   = Trainer(rank, model, train_loader, optimizer, criterion)
+        validator = Validator(rank, model, val_loader, criterion)
 
         train_batch_count = len(train_loader)
         val_batch_count   = len(val_loader)
 
-        trainer = Trainer(rank, model, train_loader, optimizer, criterion)
-        validator = Validator(rank, model, val_loader, criterion)
-
+        # We can safely print to the console if we are the master process or the number of processes is 1
         if world_size < 2 or rank == 0:
             with Progress(
                 TextColumn("[progress.description]{task.description}"),
                 TextColumn(" [progress.percentage]{task.percentage:>3.0f}% "),
-                BarColumn(),
-                TextColumn(f" [{{task.completed:>{len(str(train_batch_count))}}}/{{task.total}}] |"),
-                TextColumn("train loss: {task.fields[loss]:.4f}"),
+                BarColumn(bar_width=20),
+                TextColumn(f" [{{task.completed:>{len(str(train_batch_count))}}}/{{task.total}}]"),
+                TextColumn("> train loss: curr. {task.fields[loss]:.4f} | avg. {task.fields[avg_loss]:.4f}", style="gray"),
                 console=console
             ) as progress:
-                task = progress.add_task(f"[cyan]Epoch {scheduler.last_epoch + 1}/{n_epochs}", total=train_batch_count, loss=float('inf'))
-                on_loss_update = lambda _, loss: progress.update(task, advance=1, loss=loss)
+                # Training will update the progress bar
+                task = progress.add_task(f"[cyan]Epoch {scheduler.last_epoch + 1}/{n_epochs}", total=train_batch_count, loss=float('inf'), avg_loss=float('inf'))
+                on_loss_update = lambda _, loss, avg_loss: progress.update(task, advance=1, loss=loss, avg_loss=avg_loss)
                 avg_train_loss = trainer.step(on_loss_update)
             
-            console.print(f"-- Avarage train loss - {avg_train_loss:.4f}")
+            # Decay the learning rate
             scheduler.step()
 
+            # Update the validation metrics at each validation batch
             on_metrics_update = lambda batch, loss, ssim, psnr: console.print(
-                f"-- Testing[{batch + 1:>{len(str(val_batch_count))}}/{val_batch_count}]: loss - {loss:.4f} | SSIM - {ssim:.2f} | PSNR - {psnr:.2f}", end="\r")
+                f"Testing [{batch + 1:>{len(str(val_batch_count))}}/{val_batch_count}]: loss - {loss:.4f} | SSIM - {ssim:.2f} | PSNR - {psnr:.2f}", end="\r")
             avg_loss, avg_ssim, avg_psnr, best_logits, best_target = validator.step(on_metrics_update)
-            console.print(f"-- Validation: avg. loss - {avg_loss:.4f} | avg. ssim - {avg_ssim:.2f} | psnr. - {avg_psnr:.2f}")
+
+            # Print the final average validation metrics
+            console.print(f"Validation: avg. loss - {avg_loss:.4f} | avg. ssim - {avg_ssim:.2f} | psnr. - {avg_psnr:.2f}")
 
             write_checkpoint(
-                model, optimizer, scheduler, scheduler.last_epoch, avg_train_loss, avg_loss, 
+                model, optimizer, scheduler, avg_train_loss, avg_loss, avg_ssim, avg_psnr,
                 train_indices, val_indices, checkpoint_path)
-
-            output_path = Path(f"checkpoints/{dataset.path.stem}/epoch-{scheduler.last_epoch + 1:03d}.exr")
+            
+            # Save best inference results
+            output_path = Path(f"checkpoints/{checkpoint_path.stem}/epoch-{scheduler.last_epoch:03d}.exr")
             write_inference(best_logits, best_target, output_path)
-
+        
+        # Child-process training path, will be developed in the future
         else:
             trainer.step()
             scheduler.step()
@@ -131,11 +162,14 @@ if __name__ == "__main__":
         '--config', type=str, required=True, metavar='FILE',
         help="which file to read training configurations from")
     parser.add_argument(
-        '--seed', type=int, default=0, 
+        '-s', '--seed', type=int, default=0, metavar="",
         help="random seed for reproducibility")
     parser.add_argument(
-        '--n-gpus', type=int, default=1, 
+        '-d', '--n-gpus', type=int, default=1, metavar="",
         help="number of CUDA devices to use")
+    parser.add_argument(
+        '-n', '--num-workers', type=int, default=8, metavar="",
+        help="number of workers for data loading")
     
     # Get training configurations
     args = parser.parse_args()
@@ -144,7 +178,7 @@ if __name__ == "__main__":
 
     # Perform minor config verification
     if config.getint('model', 'context-length') - 1 > config.getint('training', 'chunk-size'):
-        print("[!] The chunk-size is less than context-length, leading to redundant computations")
+        console.print("[red]The specified chunk-size is less than context-length, leading to redundant computations")
         exit(1)
 
     # Set the random seed for reproducibility
@@ -152,9 +186,16 @@ if __name__ == "__main__":
         torch.manual_seed(args.seed)
 
     world_size = args.n_gpus
-    if world_size > 1:
-        n_workers = 0  # multiprocessing cause issues with HDF5 file access
-        mp.spawn(main, args=(world_size, config, n_workers), nprocs=world_size, join=True)
-    else:
-        n_workers = config.getint('training', 'num-workers')
-        main("cuda" if world_size == 1 else "cpu", world_size, config, n_workers)
+    try:
+        if world_size > 1:
+            console.print(f"[yellow]Multiprocessing with GPUs is under development, falling back to single GPU")
+            device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
+            main(device, 1, config, args.num_workers)
+    
+            # TODO: multiprocessing cause issues with HDF5 file access
+            # mp.spawn(main, args=(world_size, config, n_workers), nprocs=world_size, join=True)
+        else:
+            device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
+            main(device if world_size == 1 else "cpu", world_size, config, args.num_workers)
+    except KeyboardInterrupt:
+        console.print("[yellow]Exit training due to keyboard interrupt, checkpoint is saved for the last finished epoch")

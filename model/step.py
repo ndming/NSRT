@@ -107,10 +107,9 @@ class Trainer:
             loss.backward()
             self.optimizer.step()
 
-            if on_loss_update is not None:
-                on_loss_update(batch, loss.item())
-            
             batch_losses.append(loss.item())
+            if on_loss_update is not None:
+                on_loss_update(batch, loss.item(), sum(batch_losses) / len(batch_losses))
         
         return sum(batch_losses) / len(batch_losses)
         
