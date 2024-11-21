@@ -1,3 +1,4 @@
+```ini
 [dataset]
 file = datasets/bistro.hdf5
 native-resolution = 225p     # which resolution to upsample from, specified using the frame height in pixels
@@ -22,3 +23,4 @@ num-workers = 8       # number of workers for data loading
 convo-features = 32   # number of intermediate feature maps accross convolutional layers
 frame-channels = 10   # diffuse (3) + specular (3) + normal (3) + depth (1)
 context-length = 3    # number of previous PLUS the current frame to consider for temporal context
+```
