@@ -12,14 +12,10 @@ import OpenEXR
 import Imath
 import random
 
-def get_optimizer(config, model) -> tuple[Optimizer, LRScheduler]:
+def get_optimizer(name, rate, model) -> tuple[Optimizer, LRScheduler]:
     r"""Get the optimizer and learning rate scheduler based on the configuration. 
-        
         The optimizer will be initialized with the model's parameters.
     """
-
-    name = config.get('optimization', 'optimizer')
-    rate = config.getfloat('optimization', 'learning-rate')  # can be 0, in which case we use default learning rate
 
     if name == 'SGD':
         # Learning rate is halved every 100 epochs, based on: https://doi.org/10.48550/arXiv.2308.06699
@@ -112,6 +108,9 @@ def write_checkpoint(model, optimizer, scheduler, avg_train_loss, avg_loss, avg_
         'scheduler': scheduler.state_dict(),
         'train_indices': train_indices,
         'val_indices': val_indices,
+        'cpu_checkpoint': not isinstance(model, (DDP, DataParallel)),
+        'ddp_checkpoint': isinstance(model, DDP),
+        'optim_name': get_optim_name(optimizer)
     }
 
     if not output_path.exists():
@@ -121,8 +120,6 @@ def write_checkpoint(model, optimizer, scheduler, avg_train_loss, avg_loss, avg_
         state['train_losses'] = [avg_train_loss]
         state['avg_ssims'] = [avg_ssim]
         state['avg_psnrs'] = [avg_psnr]
-        state['cpu_checkpoint'] = not isinstance(model, (DDP, DataParallel))
-        state['ddp_checkpoint'] = isinstance(model, DDP)
     else:
         checkpoint = torch.load(output_path, weights_only=True)
         val_losses = checkpoint['val_losses']
@@ -134,6 +131,18 @@ def write_checkpoint(model, optimizer, scheduler, avg_train_loss, avg_loss, avg_
         state['avg_psnrs'] = checkpoint['avg_psnrs'] + [avg_psnr]
 
     torch.save(state, output_path)
+
+def get_optim_name(optimizer):
+    if isinstance(optimizer, SGD):
+        return 'SGD'
+    elif isinstance(optimizer, AdamW):
+        return 'AdamW'
+    elif isinstance(optimizer, AdaBelief):
+        return 'AdaBelief'
+    elif isinstance(optimizer, RangerAdaBelief):
+        return 'RangerAdaBelief'
+    else:
+        raise ValueError(f"Unknown optimizer: {optimizer}. Options are: SGD, AdamW, AdaBelief, RangerAdaBelief")
 
 def gen_id(length=6):
     # Generate a random hexadecimal sequence of the specified length

@@ -12,7 +12,7 @@ from model.data import HDF5Dataset, get_train_loaders
 from model.nsrt import NSRT
 from model.loss import Criterion
 from model.step import Trainer, Validator
-from utils import get_optimizer, write_inference, write_checkpoint, gen_id, unpack_model_state
+from utils import get_optimizer, write_inference, write_checkpoint, gen_id, unpack_model_state, get_optim_name
 
 from rich.progress import Progress, BarColumn, TextColumn
 from rich.console import Console
@@ -46,7 +46,6 @@ def main(rank, world_size, config, n_workers):
         conv_features=config.getint('model', 'convo-features')
     )
 
-    optimizer, scheduler = get_optimizer(config, model)
     criterion = Criterion(rank)
 
     checkpoint_path = config.get('training', 'checkpoint')
@@ -59,6 +58,7 @@ def main(rank, world_size, config, n_workers):
         model = init_model(checkpoint, model, rank)
         
         # Init optimizer and scheduler
+        optimizer, scheduler = get_optimizer(checkpoint['optim_name'], 0, model)
         optimizer.load_state_dict(checkpoint['optimizer'])
         scheduler.load_state_dict(checkpoint['scheduler'])
 
@@ -71,6 +71,21 @@ def main(rank, world_size, config, n_workers):
             model = DDP(model.to(rank), device_ids=[rank])
         elif world_size == 1:
             model = DataParallel(model).to(rank)
+
+        # Init optimizer and scheduler with config values
+        name = config.get('optimization', 'optimizer')
+        rate = config.getfloat('optimization', 'learning-rate')
+        optimizer, scheduler = get_optimizer(name, rate, model)
+
+    console.print(f"Training with:")
+    console.print(f"- Dataset: [cyan]{dataset.path.stem}")
+    console.print(f"- Native resolution: [cyan]{dataset.native_resolution}")
+    console.print(f"- Target resolution: [cyan]{dataset.target_resolution}")
+    console.print(f"- Optimizer: [cyan]{get_optim_name(optimizer)}")
+    console.print(f"- No. of convolution features: [cyan]{config.getint('model', 'convo-features')}")
+    console.print(f"- No. of frame channels: [cyan]{config.getint('model', 'frame-channels')}")
+    console.print(f"- Context length: [cyan]{config.getint('model', 'context-length')}")
+    console.print(f"Checkpoint will be saved at: [green]{checkpoint_path}")
 
     # Keep training until the total number of epochs is reached
     batch_size = config.getint('training', 'batch-size')
@@ -152,6 +167,8 @@ def init_model(checkpoint, model, rank):
     # The CPU training path has been properly initialized
     if world_size > 0:
         model.load_state_dict(checkpoint['model_latest'])
+
+    return model
 
 
 def setup(rank, world_size):
