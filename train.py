@@ -185,9 +185,12 @@ if __name__ == "__main__":
     config = ConfigParser()
     config.read(args.config)
 
-    # Perform minor config verification
+    # Perform minor config verifications
     if config.getint('model', 'context-length') - 1 > config.getint('training', 'chunk-size'):
         console.print("[red]The specified chunk-size is less than context-length, leading to redundant computations")
+        exit(1)
+    if config.getfloat('training', 'spatial-weight') < 0 or config.getfloat('training', 'spatial-weight') > 1:
+        console.print("[red]Spatial weight must be between 0 and 1")
         exit(1)
 
     # Set the random seed for reproducibility

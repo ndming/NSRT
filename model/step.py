@@ -110,7 +110,7 @@ class BaseStep():
         loss = sum(losses) / chunk_size
         ssim = sum(ssims)  / chunk_size
         psnr = sum(psnrs)  / chunk_size
-        return logits, y_target, loss if not with_metrics else logits, y_target, loss, ssim, psnr
+        return logits, y_target, loss, ssim, psnr
 
 
 class Trainer(BaseStep):
@@ -124,7 +124,7 @@ class Trainer(BaseStep):
         batch_losses = []
         for batch, (native, target) in enumerate(self.dataloader):
             self.optimizer.zero_grad()
-            _, _, loss = self.feed_patches(native, target)
+            _, _, loss, _, _ = self.feed_patches(native, target)
             loss.backward()
             self.optimizer.step()
 
