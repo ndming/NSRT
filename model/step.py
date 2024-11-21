@@ -4,7 +4,7 @@ import torch.nn.functional as F
 from torch.nn import DataParallel
 from torch.nn.parallel import DistributedDataParallel as DDP
 
-from torchmetrics import StructuralSimilarityIndexMeasure, PeakSignalNoiseRatio
+from torchmetrics.image import StructuralSimilarityIndexMeasure, PeakSignalNoiseRatio
 
 class Trainer:
     def __init__(self, rank, model, dataloader, optimizer, criterion):
@@ -201,11 +201,11 @@ class Validator:
 
                     # SSIM
                     ssim = StructuralSimilarityIndexMeasure()
-                    chunk_ssims.append(ssim(logits, y_target))
+                    chunk_ssims.append(ssim(logits.cpu(), y_target.cpu()))
 
                     # PSNR
                     psnr = PeakSignalNoiseRatio()
-                    chunk_psnrs.append(psnr(logits, y_target))
+                    chunk_psnrs.append(psnr(logits.cpu(), y_target.cpu()))
 
                 
                 loss = sum(chunk_losses) / chunk_size
@@ -216,8 +216,8 @@ class Validator:
                     on_metrics_update(batch, loss, ssim, psnr)
 
                 if best_logits is None or loss < min(batch_losses):
-                    best_logits = logits[chunk_size // 2, ...]
-                    best_target = y_target[chunk_size // 2, ...]
+                    best_logits = logits[0, ...]
+                    best_target = y_target[0, ...]
 
                 batch_losses.append(loss)
                 batch_ssims.append(ssim)

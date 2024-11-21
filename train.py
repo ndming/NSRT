@@ -16,6 +16,9 @@ from utils import get_optimizer, write_inference, write_checkpoint, gen_id
 from pathlib import Path
 
 from rich.progress import Progress, BarColumn, TextColumn
+from rich.console import Console
+
+console = Console()
 
 def main(rank, world_size, config, n_dataload_workers):
     # Initialize the distributed process group
@@ -66,7 +69,9 @@ def main(rank, world_size, config, n_dataload_workers):
     n_epochs = config.getint('training', 'epochs')
     while scheduler.last_epoch < n_epochs:
         train_loader, val_loader, train_indices, val_indices = get_train_loaders(dataset, batch_size, n_dataload_workers, split)
-        batch_count = len(train_loader)
+
+        train_batch_count = len(train_loader)
+        val_batch_count   = len(val_loader)
 
         trainer = Trainer(rank, model, train_loader, optimizer, criterion)
         validator = Validator(rank, model, val_loader, criterion)
@@ -76,25 +81,28 @@ def main(rank, world_size, config, n_dataload_workers):
                 TextColumn("[progress.description]{task.description}"),
                 TextColumn(" [progress.percentage]{task.percentage:>3.0f}% "),
                 BarColumn(),
-                TextColumn(f" [{{task.completed:>{len(str(batch_count))}}}/{{task.total}}] |"),
-                TextColumn("train loss: {task.fields[loss]:.6f}"),
+                TextColumn(f" [{{task.completed:>{len(str(train_batch_count))}}}/{{task.total}}] |"),
+                TextColumn("train loss: {task.fields[loss]:.4f}"),
+                console=console
             ) as progress:
-                task = progress.add_task(f"[cyan]Epoch {scheduler.last_epoch + 1}/{n_epochs}", total=batch_count, loss=float('inf'))
+                task = progress.add_task(f"[cyan]Epoch {scheduler.last_epoch + 1}/{n_epochs}", total=1, loss=float('inf'))
                 on_loss_update = lambda _, loss: progress.update(task, advance=1, loss=loss)
                 avg_train_loss = trainer.step(on_loss_update)
+            
+            console.print(f"-- Avarage train loss - {avg_train_loss:.4f}")
+            scheduler.step()
 
-                scheduler.step()
+            on_metrics_update = lambda batch, loss, ssim, psnr: console.print(
+                f"-- Testing[{batch + 1}/{val_batch_count}]: loss - {loss:.4f} | SSIM - {ssim:.2f} | PSNR - {psnr:.2f}", end="\r")
+            avg_loss, avg_ssim, avg_psnr, best_logits, best_target = validator.step(on_metrics_update)
+            console.print(f"-- Validation: avg. loss - {avg_loss:.4f} | avg. ssim - {avg_ssim:.2f} | psnr. - {avg_psnr:.2f}")
 
-                on_metrics_update = lambda _, loss, ssim, psnr: progress.console.print(f"Validating: loss - {loss:.4f} | SSIM - {ssim:.2f} | PSNR - {psnr:.2f}", end="\r")
-                avg_loss, avg_ssim, avg_psnr, best_logits, best_target = validator.step(on_metrics_update)
-                progress.console.print(f"[green]Validation: avg. loss - {avg_loss:.4f} | avg. ssim - {avg_ssim:.2f} | psnr. - {avg_psnr:.2f}")
+            write_checkpoint(
+                model, optimizer, scheduler, scheduler.last_epoch, avg_train_loss, avg_loss, 
+                train_indices, val_indices, checkpoint_path)
 
-                write_checkpoint(
-                    model, optimizer, scheduler, scheduler.last_epoch, avg_train_loss, avg_loss, 
-                    train_indices, val_indices, checkpoint_path)
-
-                output_path = Path(f"checkpoints/{dataset.path.stem}/epoch-{scheduler.last_epoch + 1:03d}.exr")
-                write_inference(best_logits, best_target, output_path)
+            output_path = Path(f"checkpoints/{dataset.path.stem}/epoch-{scheduler.last_epoch + 1:03d}.exr")
+            write_inference(best_logits, best_target, output_path)
 
 
         else:
