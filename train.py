@@ -85,7 +85,7 @@ def main(rank, world_size, config, n_dataload_workers):
                 TextColumn("train loss: {task.fields[loss]:.4f}"),
                 console=console
             ) as progress:
-                task = progress.add_task(f"[cyan]Epoch {scheduler.last_epoch + 1}/{n_epochs}", total=1, loss=float('inf'))
+                task = progress.add_task(f"[cyan]Epoch {scheduler.last_epoch + 1}/{n_epochs}", total=train_batch_count, loss=float('inf'))
                 on_loss_update = lambda _, loss: progress.update(task, advance=1, loss=loss)
                 avg_train_loss = trainer.step(on_loss_update)
             
@@ -93,7 +93,7 @@ def main(rank, world_size, config, n_dataload_workers):
             scheduler.step()
 
             on_metrics_update = lambda batch, loss, ssim, psnr: console.print(
-                f"-- Testing[{batch + 1}/{val_batch_count}]: loss - {loss:.4f} | SSIM - {ssim:.2f} | PSNR - {psnr:.2f}", end="\r")
+                f"-- Testing[{batch + 1:>{len(str(val_batch_count))}}/{val_batch_count}]: loss - {loss:.4f} | SSIM - {ssim:.2f} | PSNR - {psnr:.2f}", end="\r")
             avg_loss, avg_ssim, avg_psnr, best_logits, best_target = validator.step(on_metrics_update)
             console.print(f"-- Validation: avg. loss - {avg_loss:.4f} | avg. ssim - {avg_ssim:.2f} | psnr. - {avg_psnr:.2f}")
 
@@ -103,7 +103,6 @@ def main(rank, world_size, config, n_dataload_workers):
 
             output_path = Path(f"checkpoints/{dataset.path.stem}/epoch-{scheduler.last_epoch + 1:03d}.exr")
             write_inference(best_logits, best_target, output_path)
-
 
         else:
             trainer.step()
