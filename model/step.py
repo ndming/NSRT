@@ -152,6 +152,7 @@ class Validator(BaseStep):
         with torch.no_grad():
             for batch, (native, target) in enumerate(self.dataloader):
                 logits, y_target, loss, ssim, psnr = self.feed_patches(native, target, with_metrics=True)
+                loss = loss.item()
 
                 if on_metrics_update is not None:
                     on_metrics_update(batch, loss, ssim, psnr)

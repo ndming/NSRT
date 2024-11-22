@@ -46,7 +46,7 @@ def main(rank, world_size, config, n_workers):
         conv_features=config.getint('model', 'convo-features')
     )
 
-    criterion = Criterion(rank)
+    criterion = Criterion(rank, vgg_depth=config.getint('loss', 'vgg-depth'))
 
     checkpoint_path = config.get('training', 'checkpoint')
     checkpoint_path = Path(f"checkpoints/{dataset.path.stem}-{gen_id()}.pth") if not checkpoint_path else Path(checkpoint_path)
@@ -56,7 +56,7 @@ def main(rank, world_size, config, n_workers):
         # Load all internal tensors to CPU, we wil move them to the correct device later
         checkpoint = torch.load(checkpoint_path, weights_only=True, map_location='cpu')
         model = init_model(checkpoint, model, rank)
-        
+
         # Init optimizer and scheduler
         optimizer, scheduler = get_optimizer(checkpoint['optim_name'], 0, model)
         optimizer.load_state_dict(checkpoint['optimizer'])
@@ -94,12 +94,15 @@ def main(rank, world_size, config, n_workers):
         # We initialize train dataloaders at every epoch iteration to shuffle the training and validation indices
         train_loader, val_loader, train_indices, val_indices = get_train_loaders(dataset, batch_size, n_workers, split)
 
-        spatial_weight = config.getfloat('training', 'spatial-weight')
+        spatial_weight = config.getfloat('loss', 'spatial-weight')
         trainer   = Trainer(rank, model, train_loader, optimizer, criterion, spatial_weight)
         validator = Validator(rank, model, val_loader, criterion, spatial_weight)
 
         train_batch_count = len(train_loader)
         val_batch_count   = len(val_loader)
+
+        learning_rate = f"{scheduler.get_last_lr()[0]:.1e}"
+        current_epoch = scheduler.last_epoch + 1
 
         # We can safely print to the console if we are the master process or the number of processes is 1
         if world_size < 2 or rank == 0:
@@ -112,10 +115,10 @@ def main(rank, world_size, config, n_workers):
                 console=console
             ) as progress:
                 # Training will update the progress bar
-                task = progress.add_task(f"[cyan]Epoch {scheduler.last_epoch + 1}/{n_epochs}", total=train_batch_count, loss=float('inf'), avg_loss=float('inf'))
+                task = progress.add_task(f"[cyan]Epoch {current_epoch}/{n_epochs} | lr - {learning_rate}", total=train_batch_count, loss=float('inf'), avg_loss=float('inf'))
                 on_loss_update = lambda _, loss, avg_loss: progress.update(task, advance=1, loss=loss, avg_loss=avg_loss)
                 avg_train_loss = trainer.step(on_loss_update)
-            
+
             # Decay the learning rate
             scheduler.step()
 
@@ -130,11 +133,11 @@ def main(rank, world_size, config, n_workers):
             write_checkpoint(
                 model, optimizer, scheduler, avg_train_loss, avg_loss, avg_ssim, avg_psnr,
                 train_indices, val_indices, checkpoint_path)
-            
+
             # Save best inference results
             output_path = Path(f"checkpoints/{checkpoint_path.stem}/epoch-{scheduler.last_epoch:03d}.exr")
             write_inference(best_logits, best_target, output_path)
-        
+
         # Child-process training path, will be developed in the future
         else:
             trainer.step()
@@ -176,7 +179,7 @@ def setup(rank, world_size):
     os.environ['MASTER_PORT'] = '12355'
 
     dist.init_process_group("nccl", rank=rank, world_size=world_size)
-    
+
 
 def cleanup():
     dist.destroy_process_group()
@@ -196,7 +199,7 @@ if __name__ == "__main__":
     parser.add_argument(
         '-n', '--num-workers', type=int, default=8, metavar='',
         help="number of workers for data loading")
-    
+
     # Get training configurations
     args = parser.parse_args()
     config = ConfigParser()
@@ -206,7 +209,7 @@ if __name__ == "__main__":
     if config.getint('model', 'context-length') - 1 > config.getint('training', 'chunk-size'):
         console.print("[red]The specified chunk-size is less than context-length, leading to redundant computations")
         exit(1)
-    if config.getfloat('training', 'spatial-weight') < 0 or config.getfloat('training', 'spatial-weight') > 1:
+    if config.getfloat('loss', 'spatial-weight') < 0 or config.getfloat('loss', 'spatial-weight') > 1:
         console.print("[red]Spatial weight must be between 0 and 1")
         exit(1)
 
@@ -220,7 +223,7 @@ if __name__ == "__main__":
             console.print(f"[yellow]Multiprocessing with GPUs is under development, falling back to single GPU")
             device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
             main(device, 1, config, args.num_workers)
-    
+
             # TODO: multiprocessing cause issues with HDF5 file access
             # mp.spawn(main, args=(world_size, config, n_workers), nprocs=world_size, join=True)
         else:

@@ -7,7 +7,7 @@ from torchvision import models, transforms
 class Criterion(nn.Module):
     r"""The loss criterion for the NSRT model."""
 
-    def __init__(self, rank):
+    def __init__(self, rank, vgg_depth):
         r"""See [Temporally Stable Real-Time Joint Neural Denoising and Supersampling](https://doi.org/10.1145/3543870) 
             for more details on the loss function.
         """
@@ -18,7 +18,7 @@ class Criterion(nn.Module):
         self.w_diff = 1.0
         self.w_spec = 1.0
 
-        self.spato_loss = PerceptualLossVGG16(rank)
+        self.spato_loss = PerceptualLossVGG16(rank, vgg_depth)
         self.tempo_loss = TemporalGradientLoss()
 
     def forward(self, logits, target, warped_logits, warped_target, w_spatial=0.2):
