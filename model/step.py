@@ -29,7 +29,7 @@ class BaseStep():
         chunk_size = self.dataloader.dataset.chunk_size
         prev_count = self.context_length - 1
 
-        logits = None      # the previously reconstructed diffuse + specular  (B, 6, H * factor, W * factor)
+        logits = None      # the previously reconstructed diffuse + specular  (B, 9, H * factor, W * factor)
         lstm_state = None  # the hidden and cell states of the ConvLSTM from the previous frame
 
         losses = []  # the accumulated loss for the current chunk
@@ -43,27 +43,32 @@ class BaseStep():
 
             # Extract target light components of the current frame
             y_target = target[:, frame_idx, :6, ...]      # (B, 6, H * factor, W * factor)
+            b, _, h, w = y_target.shape
+
+            # Compute the combined target at the current frame
+            diff_col, spec_col = target[:, frame_idx, 6:-2, ...].split([3, 3], dim=1)
+            target_diff, target_spec = y_target.split([3, 3], dim=1)
+            target_comb = target_diff * diff_col + target_spec * spec_col
+            y_target = torch.cat([y_target, target_comb], dim=1)
 
             # Warp the previously reconstructed logits to the current frame with the upsampled motion vectors
             # We do this step first since curr2prev will change when back warping previous frames
             if logits is None:
                 # We're in the first frame, set warped logits and target to zeros
-                warped_logits = torch.zeros_like(y_target)   # (B, 6, H * factor, W * factor)
-                warped_target = torch.zeros_like(y_target)   # (B, 6, H * factor, W * factor)
+                warped_logits = torch.zeros((b, 9, h, w), device=native.device, dtype=native.dtype)
+                warped_target = torch.zeros((b, 9, h, w), device=target.device, dtype=target.dtype)
             else:
                 logits = logits.detach()  # detach the previous logits to prevent backpropagation
                 scaled_curr2prev = F.interpolate(curr2prev, scale_factor=factor, mode='bilinear', align_corners=True)
-                target_curr2prev = target[:, frame_idx, -2:, ...]         # (B, 2, H * factor, W * factor)
-                warped_logits = warp_frame(logits, scaled_curr2prev)      # (B, 6, H * factor, W * factor)
-                warped_target = warp_frame(target[:, frame_idx - 1, :6, ...], target_curr2prev, y_target)
+                target_curr2prev = target[:, frame_idx, -2:, ...]     # (B, 2, H * factor, W * factor)
+                warped_logits = warp_frame(logits, scaled_curr2prev)  # (B, 9, H * factor, W * factor)
+                prev_diff, prev_spec, prev_diff_col, prev_spec_col = target[:, frame_idx - 1, :-2, ...].split([3, 3, 3, 3], dim=1)
+                prev_comb = prev_diff * prev_diff_col + prev_spec * prev_spec_col
+                warped_target = warp_frame(torch.cat([prev_diff, prev_spec, prev_comb], dim=1), target_curr2prev, y_target)
 
             # Extract the current frame light and buffer components
-            x_curr = native[:, frame_idx, :self.frame_channels, ...]      # (B, 10, H, W)
-            b, _, h, w = x_curr.shape
-
-            # The final version of the first input we will send to NSRT
-            x = tonemap(x_curr[:, :6, ...])                # (B,  6, H, W)
-            x = torch.cat([x, x_curr[:, 6:, ...]], dim=1)  # (B, 10, H, W)
+            x = native[:, frame_idx, :self.frame_channels, ...]      # (B, 10, H, W)
+            b, _, h, w = x.shape
 
             # Warp all previous frames in the context length to the current frame and concatenate them to x
             # We also collect the motion masks and accummulate relative motions along the way
@@ -71,32 +76,31 @@ class BaseStep():
             prev2curr = torch.zeros_like(curr2prev)        # (B, 2, H, W)
             for i in range(prev_count):
                 if frame_idx - i - 1 < 0:
-                    warped_prev = torch.zeros_like(x_curr)
+                    warped_prev = torch.zeros_like(x)
                     masks.append(torch.zeros((b, 1, h, w), device=x.device, dtype=torch.float32))
                 else:
                     # Frame backward warping
                     prev = native[:, frame_idx - i - 1, :self.frame_channels, ...]  # (B, 10, H, W)
-                    prev_tonemapped = tonemap(prev[:, :6, ...])
-                    prev_tonemapped = torch.cat([prev_tonemapped, prev[:, 6:, ...]], dim=1)  # (B, 10, H, W)
-                    warped_prev = warp_frame(prev_tonemapped, curr2prev, x_curr)
+                    warped_prev = warp_frame(prev, curr2prev, x)                    # (B, 10, H, W)
                     # Motion masks and relative motions
-                    prev2curr = prev2curr + native[:, frame_idx - i - 1, -2:, ...]      # (B, 2, H, W)
+                    prev2curr = prev2curr + native[:, frame_idx - i - 1, -2:, ...]  # (B, 2, H, W)
                     threshold = self.dataloader.dataset.motion_threshold
                     masks.append(compute_motion_mask(curr2prev, prev2curr, threshold))  # append (B, 1, H, W)
                     curr2prev = curr2prev + native[:, frame_idx - i - 1, -4:-2, ...]
-                
+
                 x = torch.cat([x, warped_prev], dim=1)
 
             # Concatenate all motion masks
             motion_masks = torch.cat(masks, dim=1)
 
-            # Tonemap target light components
-            y_target = tonemap(y_target)            # (B, 6, H * factor, W * factor)
-            warped_target = tonemap(warped_target)  # (B, 6, H * factor, W * factor)
-
             # Forward pass
-            logits, lstm_state = self.model(x, motion_masks, warped_logits, lstm_state)
+            logits, lstm_state = self.model(x, motion_masks, warped_logits[:, :6, ...], lstm_state)
             lstm_state = (lstm_state[0].detach(), lstm_state[1].detach())
+
+            # Compute the combined logits and target
+            logits_diff, logits_spec = logits.split([3, 3], dim=1)
+            logits_comb = logits_diff * diff_col + logits_spec * spec_col
+            logits = torch.cat([logits, logits_comb], dim=1)
 
             # Accumulate the loss, we don't use loss += here, see:
             # https://stackoverflow.com/questions/69092258/pytorch-one-of-the-variables-needed-for-gradient-computation-has-been-modified
@@ -104,9 +108,9 @@ class BaseStep():
             losses.append(self.criterion(logits, y_target, warped_logits, warped_target, w_spatial))
 
             if with_metrics:
-                ssims.append(self.ssim(logits.cpu(), y_target.cpu()))
-                psnrs.append(self.psnr(logits.cpu(), y_target.cpu()))
-        
+                ssims.append(self.ssim(logits[:, -3:, ...].cpu(), y_target[:, -3:, ...].cpu()).item())
+                psnrs.append(self.psnr(logits[:, -3:, ...].cpu(), y_target[:, -3:, ...].cpu()).item())
+
         loss = sum(losses) / chunk_size
         ssim = sum(ssims)  / chunk_size
         psnr = sum(psnrs)  / chunk_size
@@ -149,6 +153,9 @@ class Validator(BaseStep):
         best_logits = None
         best_target = None
 
+        poor_logits = None
+        poor_target = None
+
         with torch.no_grad():
             for batch, (native, target) in enumerate(self.dataloader):
                 logits, y_target, loss, ssim, psnr = self.feed_patches(native, target, with_metrics=True)
@@ -160,6 +167,10 @@ class Validator(BaseStep):
                 if best_logits is None or loss < min(batch_losses):
                     best_logits = logits[0, ...]
                     best_target = y_target[0, ...]
+                
+                if poor_logits is None or loss > max(batch_losses):
+                    poor_logits = logits[0, ...]
+                    poor_target = y_target[0, ...]
 
                 batch_losses.append(loss)
                 batch_ssims.append(ssim)
@@ -168,7 +179,7 @@ class Validator(BaseStep):
         avg_loss = sum(batch_losses) / len(batch_losses)
         avg_ssim = sum(batch_ssims)  / len(batch_ssims)
         avg_psnr = sum(batch_psnrs)  / len(batch_psnrs)
-        return avg_loss, avg_ssim, avg_psnr, best_logits, best_target
+        return avg_loss, avg_ssim, avg_psnr, best_logits, best_target, poor_logits, poor_target
 
 
 def warp_frame(prev, vector, curr=None):
@@ -222,10 +233,3 @@ def compute_motion_mask(curr2prev, prev2curr, threshold):
     mask = curr2prev_dual - curr2prev
     mask = torch.abs(mask) >= threshold
     return torch.any(mask, dim=1, keepdim=True).float()
-
-
-def tonemap(x, gamma=2.2):
-    # See Equation (1) in https://doi.org/10.1145/3543870
-    x = torch.clamp(x, 0, 65535)
-    x = torch.log(x + 1).pow(1 / gamma)
-    return x

@@ -59,12 +59,12 @@ class HDF5Dataset(data.Dataset):
             if torch.isnan(native_frame).any() or torch.isinf(native_frame).any():
                 if self.on_detect_nan:
                     self.on_detect_nan(seq_idx, frame_idx, self.train, self.native_resolution)
-                native_frame = torch.nan_to_num(native_frame, nan=1.0, posinf=0.0, neginf=0.0)
+                native_frame = torch.nan_to_num(native_frame, nan=0.0, posinf=1.0, neginf=0.0)
             
             if torch.isnan(target_frame).any() or torch.isinf(target_frame).any():
                 if self.on_detect_nan:
                     self.on_detect_nan(seq_idx, frame_idx, self.train, self.target_resolution)
-                target_frame = torch.nan_to_num(target_frame, nan=1.0, posinf=0.0, neginf=0.0)
+                target_frame = torch.nan_to_num(target_frame, nan=0.0, posinf=1.0, neginf=0.0)
 
             native_chunk.append(native_frame)
             target_chunk.append(target_frame)
@@ -76,7 +76,8 @@ class HDF5Dataset(data.Dataset):
         diffuse  = torch.tensor(np.array(frame['diffuse-dir']) + np.array(frame['diffuse-ind']))  # (3, H, W)
         specular = torch.tensor(np.array(frame['glossy-dir'])  + np.array(frame['glossy-ind']))   # (3, H, W)
         normal   = torch.tensor(np.array(frame['normal']))                                        # (3, H, W)
-        depth    = torch.tensor(np.array(frame['depth'])).unsqueeze(0)                            # (1, H, W)
+        albedo   = torch.tensor(np.array(frame['diffuse-col']) + np.array(frame['glossy-col']))   # (3, H, W)
+        rough    = torch.tensor(np.array(frame['roughness'])).unsqueeze(0)                        # (1, H, W)
         vector   = torch.tensor(np.array(frame['vector']))                                        # (4, H, W)
 
         # Fix the vector values so that the 2 first components map pixels in the current frame to the previous frame,
@@ -87,31 +88,43 @@ class HDF5Dataset(data.Dataset):
         vector[3,  ...] = -vector[3,  ...]
         vector[2:, ...] = -vector[2:, ...]
 
+        # Tonemap HDR lighting components
+        diffuse  = tonemap(diffuse)
+        specular = tonemap(specular)
+
         # Training is done on patches
         if self.train:
             diffuse  = self._crop_patch(diffuse,  patch_idx)
             specular = self._crop_patch(specular, patch_idx)
             normal   = self._crop_patch(normal,   patch_idx)
-            depth    = self._crop_patch(depth,    patch_idx)
+            albedo   = self._crop_patch(albedo,   patch_idx)
+            rough    = self._crop_patch(rough,    patch_idx)
             vector   = self._crop_patch(vector,   patch_idx)
 
-        frame = torch.cat([diffuse, specular, normal, depth, vector], dim=0)
+        frame = torch.cat([diffuse, specular, normal, albedo, rough, vector], dim=0)
         return frame
     
     def _populate_target_frame(self, frame, patch_idx):
         # Convert to numpy arrays first, otherwise the loading would be extremely slow
         diffuse  = torch.tensor(np.array(frame['diffuse-dir']) + np.array(frame['diffuse-ind']))  # (3, H, W)
         specular = torch.tensor(np.array(frame['glossy-dir'])  + np.array(frame['glossy-ind']))   # (3, H, W)
+        diff_col = torch.tensor(np.array(frame['diffuse-col']))                                   # (3, H, W)
+        spec_col = torch.tensor(np.array(frame['glossy-col']))                                    # (3, H, W)
         vector   = torch.tensor(np.array(frame['vector']))[:2, ...]                               # (2, H, W)
+
         vector[1,  ...] = -vector[1,  ...]  # flip the y-component
+        diffuse  = tonemap(diffuse)
+        specular = tonemap(specular)
 
         # Training is done on patches
         if self.train:
             diffuse  = self._crop_patch(diffuse,  patch_idx, self.upsampling_factor)
             specular = self._crop_patch(specular, patch_idx, self.upsampling_factor)
+            diff_col = self._crop_patch(diff_col, patch_idx, self.upsampling_factor)
+            spec_col = self._crop_patch(spec_col, patch_idx, self.upsampling_factor)
             vector   = self._crop_patch(vector,   patch_idx, self.upsampling_factor)
 
-        frame = torch.cat([diffuse, specular, vector], dim=0)
+        frame = torch.cat([diffuse, specular, diff_col, spec_col, vector], dim=0)
         return frame
     
     def _crop_patch(self, tensor, patch_idx, factor=1):
@@ -132,7 +145,7 @@ def get_train_loaders(dataset, batch_size, n_workers, split=None):
     if split is None:
         indices = torch.arange(len(dataset))
         indices = indices[torch.randperm(len(indices))]
-        train_size = int(0.9 * len(indices))
+        train_size = int(0.8 * len(indices))
         train_indices, val_indices = indices[:train_size], indices[train_size:]
     else:
         train_indices, val_indices = split
@@ -144,3 +157,10 @@ def get_train_loaders(dataset, batch_size, n_workers, split=None):
     train_loader  = data.DataLoader(dataset, batch_size=batch_size, sampler=train_sampler, pin_memory=True, num_workers=n_workers)
     val_loader    = data.DataLoader(dataset, batch_size=batch_size, sampler=val_sampler,   pin_memory=True, num_workers=n_workers)
     return train_loader, val_loader, train_indices, val_indices
+
+
+def tonemap(x, gamma=2.2):
+    # See Equation (1) in https://doi.org/10.1145/3543870
+    x = torch.clamp(x, 0, 65535)
+    x = torch.log(x + 1).pow(1 / gamma)
+    return x

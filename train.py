@@ -65,6 +65,10 @@ def main(rank, world_size, config, n_workers):
         # Get the split indices for the training and validation sets
         split = checkpoint['train_indices'], checkpoint['val_indices']
         console.print(f"Resuming training from epoch [cyan]{scheduler.last_epoch + 1}")
+        last_val_loss = checkpoint['val_losses'][-1]
+        last_avg_ssim = checkpoint['avg_ssims'][-1]
+        last_avg_psnr = checkpoint['avg_psnrs'][-1]
+        console.print(f"Last validation: avg. loss - {last_val_loss:.4f} | avg. ssim - {last_avg_ssim:.2f} | psnr. - {last_avg_psnr:.2f}")
     else:
         # Simnply move the model to the correct device if there is no checkpoint
         if world_size > 1:
@@ -115,7 +119,8 @@ def main(rank, world_size, config, n_workers):
                 console=console
             ) as progress:
                 # Training will update the progress bar
-                task = progress.add_task(f"[cyan]Epoch {current_epoch}/{n_epochs} | lr - {learning_rate}", total=train_batch_count, loss=float('inf'), avg_loss=float('inf'))
+                task_desc = f"[cyan]Epoch {current_epoch:>{len(str(n_epochs))}}/{n_epochs} | lr {learning_rate}"
+                task = progress.add_task(task_desc, total=train_batch_count, loss=float('inf'), avg_loss=float('inf'))
                 on_loss_update = lambda _, loss, avg_loss: progress.update(task, advance=1, loss=loss, avg_loss=avg_loss)
                 avg_train_loss = trainer.step(on_loss_update)
 
@@ -125,18 +130,20 @@ def main(rank, world_size, config, n_workers):
             # Update the validation metrics at each validation batch
             on_metrics_update = lambda batch, loss, ssim, psnr: console.print(
                 f"Testing [{batch + 1:>{len(str(val_batch_count))}}/{val_batch_count}]: loss - {loss:.4f} | SSIM - {ssim:.2f} | PSNR - {psnr:.2f}", end="\r")
-            avg_loss, avg_ssim, avg_psnr, best_logits, best_target = validator.step(on_metrics_update)
+            avg_loss, avg_ssim, avg_psnr, best_logits, best_target, poor_logits, poor_target = validator.step(on_metrics_update)
 
             # Print the final average validation metrics
-            console.print(f"Validation: avg. loss - {avg_loss:.4f} | avg. ssim - {avg_ssim:.2f} | psnr. - {avg_psnr:.2f}")
+            console.print(f"Validation: avg. loss {avg_loss:.4f} | avg. ssim {avg_ssim:.2f} | psnr. {avg_psnr:.2f}")
 
             write_checkpoint(
                 model, optimizer, scheduler, avg_train_loss, avg_loss, avg_ssim, avg_psnr,
                 train_indices, val_indices, checkpoint_path)
 
-            # Save best inference results
+            # Save best and poor inference results
             output_path = Path(f"checkpoints/{checkpoint_path.stem}/epoch-{scheduler.last_epoch:03d}.exr")
             write_inference(best_logits, best_target, output_path)
+            output_path = Path(f"checkpoints/{checkpoint_path.stem}/epoch-{scheduler.last_epoch:03d}-poor.exr")
+            write_inference(poor_logits, poor_target, output_path)
 
         # Child-process training path, will be developed in the future
         else:

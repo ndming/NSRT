@@ -36,12 +36,12 @@ def get_optimizer(name, rate, model) -> tuple[Optimizer, LRScheduler]:
         scheduler = ExponentialLR(optimizer, gamma=0.9)
     elif name == 'RangerAdaBelief':
         # Settings are the same as AdaBelief, but with the Ranger optimizer
-        initial_lr = rate or 1e-3
+        initial_lr = rate or 1e-4
         optimizer = RangerAdaBelief(model.parameters(), lr=initial_lr, betas=(0.9, 0.999), eps=1e-8, weight_decay=1e-2, weight_decouple=True)
         scheduler = ExponentialLR(optimizer, gamma=0.9)
     else:
         raise ValueError(f"Unknown optimizer: {name}. Options are: SGD, AdamW, AdaBelief, RangerAdaBelief")
-    
+
     return optimizer, scheduler
 
 
@@ -49,10 +49,12 @@ def write_inference(logits, target, output_path):
     r"""Write the best results to an EXR file.
     """
 
-    logits_diff = logits[:3, :, :].cpu().numpy().transpose(1, 2, 0)
-    logits_spec = logits[3:, :, :].cpu().numpy().transpose(1, 2, 0)
-    target_diff = target[:3, :, :].cpu().numpy().transpose(1, 2, 0)
-    target_spec = target[3:, :, :].cpu().numpy().transpose(1, 2, 0)
+    logits_diff = logits[:3,  :, :].cpu().numpy().transpose(1, 2, 0)
+    logits_spec = logits[3:6, :, :].cpu().numpy().transpose(1, 2, 0)
+    logits_comb = logits[6:,  :, :].cpu().numpy().transpose(1, 2, 0)
+    target_diff = target[:3,  :, :].cpu().numpy().transpose(1, 2, 0)
+    target_spec = target[3:6, :, :].cpu().numpy().transpose(1, 2, 0)
+    target_comb = target[6:,  :, :].cpu().numpy().transpose(1, 2, 0)
 
     height, width, _ = logits_diff.shape
     header = OpenEXR.Header(width, height)
@@ -73,6 +75,12 @@ def write_inference(logits, target, output_path):
         f"{target_name}.Spec.B": Imath.Channel(Imath.PixelType(Imath.PixelType.FLOAT)),
         f"{target_name}.Spec.G": Imath.Channel(Imath.PixelType(Imath.PixelType.FLOAT)),
         f"{target_name}.Spec.R": Imath.Channel(Imath.PixelType(Imath.PixelType.FLOAT)),
+        f"{logits_name}.Comb.B": Imath.Channel(Imath.PixelType(Imath.PixelType.FLOAT)),
+        f"{logits_name}.Comb.G": Imath.Channel(Imath.PixelType(Imath.PixelType.FLOAT)),
+        f"{logits_name}.Comb.R": Imath.Channel(Imath.PixelType(Imath.PixelType.FLOAT)),
+        f"{target_name}.Comb.B": Imath.Channel(Imath.PixelType(Imath.PixelType.FLOAT)),
+        f"{target_name}.Comb.G": Imath.Channel(Imath.PixelType(Imath.PixelType.FLOAT)),
+        f"{target_name}.Comb.R": Imath.Channel(Imath.PixelType(Imath.PixelType.FLOAT)),
     }
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -90,6 +98,12 @@ def write_inference(logits, target, output_path):
         f"{target_name}.Spec.B": target_spec[:, :, 2].tobytes(),
         f"{target_name}.Spec.G": target_spec[:, :, 1].tobytes(),
         f"{target_name}.Spec.R": target_spec[:, :, 0].tobytes(),
+        f"{logits_name}.Comb.B": logits_comb[:, :, 2].tobytes(),
+        f"{logits_name}.Comb.G": logits_comb[:, :, 1].tobytes(),
+        f"{logits_name}.Comb.R": logits_comb[:, :, 0].tobytes(),
+        f"{target_name}.Comb.B": target_comb[:, :, 2].tobytes(),
+        f"{target_name}.Comb.G": target_comb[:, :, 1].tobytes(),
+        f"{target_name}.Comb.R": target_comb[:, :, 0].tobytes(),
     })
 
 

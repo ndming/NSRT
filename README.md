@@ -1,4 +1,4 @@
-# Neural Supersampling with Radiance Demodulation using Transformer
+# Neural Supersampling for Real-time Rendering with Enhanced Radiance Demodulation
 
 ## Environment
 Model implementation uses Pytorch. Training and testing are guaranteed to run on Linux with:

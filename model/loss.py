@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from torchvision import models, transforms
+from torchvision import models
 
 class Criterion(nn.Module):
     r"""The loss criterion for the NSRT model."""
@@ -17,22 +17,24 @@ class Criterion(nn.Module):
         # Weights for each task
         self.w_diff = 1.0
         self.w_spec = 1.0
+        self.w_comb = 1.0
 
         self.spato_loss = PerceptualLossVGG16(rank, vgg_depth)
         self.tempo_loss = TemporalGradientLoss()
 
     def forward(self, logits, target, warped_logits, warped_target, w_spatial=0.2):
-        logits_diff, logits_spec = torch.split(logits, [3, 3], dim=1)
-        target_diff, target_spec = torch.split(target, [3, 3], dim=1)
-        warped_logits_diff, warped_logits_spec = torch.split(warped_logits, [3, 3], dim=1)
-        warped_target_diff, warped_target_spec = torch.split(warped_target, [3, 3], dim=1)
+        logits_diff, logits_spec, logits_comb = torch.split(logits, [3, 3, 3], dim=1)
+        target_diff, target_spec, target_comb = torch.split(target, [3, 3, 3], dim=1)
+        warped_logits_diff, warped_logits_spec, warped_logits_comb = torch.split(warped_logits, [3, 3, 3], dim=1)
+        warped_target_diff, warped_target_spec, warped_target_comb = torch.split(warped_target, [3, 3, 3], dim=1)
 
         loss_diff = self._compute_task_loss(logits_diff, target_diff, warped_logits_diff, warped_target_diff, w_spatial)
         loss_spec = self._compute_task_loss(logits_spec, target_spec, warped_logits_spec, warped_target_spec, w_spatial)
+        loss_comb = self._compute_task_loss(logits_comb, target_comb, warped_logits_comb, warped_target_comb, w_spatial)
 
         # The total loss is the weighted sum of the spatial and temporal losses for each task
         # See https://doi.org/10.1145/3543870, Equation (3) for more details
-        return self.w_diff * loss_diff + self.w_spec * loss_spec
+        return self.w_diff * loss_diff + self.w_spec * loss_spec + self.w_comb * loss_comb
     
     def _compute_task_loss(self, logits, target, warped_logits, warped_target, w_spatial):
         # Each task loss is a weighted sum of the spatial and temporal losses
@@ -56,8 +58,7 @@ class PerceptualLossVGG16(nn.Module):
 
         super().__init__()
 
-        # For VGG16, input images are expected to be zero-centered with respect to ImageNet's dataset
-        self.vgg_transform = transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        # For VGG16, input images are expected to be zero-centered with respect to ImageNet's dataset mean
         self.register_buffer("mean", torch.tensor([0.485, 0.456, 0.406], device=rank).view(1, 3, 1, 1))
         self.register_buffer("std",  torch.tensor([0.229, 0.224, 0.225], device=rank).view(1, 3, 1, 1))
 
