@@ -103,17 +103,21 @@ epoches that have been trained in the checkpoint if one exists.
 - `patch-size`: training is performed on square patches cropped from the input frames, not the whole frame.
 - `spatial-stride`: this will result in overlapping between patches to crop from the input frames. Smaller patch strides 
 increase the number of training examples.
-- `spatial-weight`: the spatial weight used in the loss computation, must be in `[0, 1]`.
 - `chunk-size`: each training example consists of a chunk of consecutive frames. This defines how many frames to include
 in the chunk.
 - `temporal-stride`: this defines the overlap between chunks when extracting from a traning sequence. Smaller chunk
 strides increase the number of training examples.
 - `batch-size`: a training batch will have batch-size chunks of consecutive patches.
 
+### loss
+- `spatial-weight`: the spatial weight used in the loss computation, must be in `[0, 1]`.
+- `vgg-depth`: the current implementation use perceptual loss from VGG16's feature extraction layers. This number defines
+how many VGG16 layers will be used to compute the spatial loss.
+
 ### model
 - `convo-features`: the number of intermediate feature maps accross convolutional layers.
 - `frame-channels`: the number of channels in a frame when inputs are fed to the network. If the network is trained 
-using diffuse (3), specular (3), normal (3), albedo (3) and depth (1) maps, then the number of channels to specify is 13.
+using diffuse, specular, normal, albedo, and depth maps, the number of channels to specify is 13.
 - `context-length`: the number of previous frames PLUS the current frame to consider for temporal context.
 
 ### A training config example
@@ -133,10 +137,13 @@ checkpoint = ""       # from which checkpoint to resume training
 epochs = 400          # the number of training epochs
 patch-size = 80       # training is performed on square patches
 spatial-stride = 60   # overlap degree between patches
-spatial-weight = 0.8  # loss spatial weight, must be in [0, 1]
 chunk-size = 8        # the number of consecutive frames to process
 temporal-stride = 4   # overlap degree between chunks
 batch-size = 8        # the number of training examples in each training batch
+
+[loss]
+spatial-weight = 0.4  # loss spatial weight, must be in [0, 1]
+vgg-depth = 9         # the number of VGG layers to use for spatial loss
 
 [model]
 convo-features = 32   # the number of intermediate feature maps
