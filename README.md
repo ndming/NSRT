@@ -8,7 +8,72 @@ Model implementation uses Pytorch. Training and testing are guaranteed to run on
 See `requirements.txt` for additional required package.
 
 ## Dataset
-TODO
+The current implementation use HDF5 dataset files, but effort are being made to make this approach plausible for
+distributed data training with multi-process.
+
+The structure of the HDF5 source is expected to have the following hierarchy:
+
+```
+/
+|
+|____225p
+|   |
+|   |____train
+|   |   |
+|   |   |____seq-000
+|   |   |   |
+|   |   |   |____frame-000
+|   |   |   |   |
+|   |   |   |   |____combined
+|   |   |   |   |
+|   |   |   |   |____diffuse-col
+|   |   |   |   |
+|   |   |   |   |____diffuse-dir
+|   |   |   |   |
+|   |   |   |   |____diffuse-ind
+|   |   |   |   |
+|   |   |   |   |____glossy-dir
+|   |   |   |   |
+|   |   |   |   |____glossy-ind
+|   |   |   |   |
+|   |   |   |   |____glossy-col
+|   |   |   |   |
+|   |   |   |   |____depth
+|   |   |   |   |
+|   |   |   |   |____normal
+|   |   |   |   |
+|   |   |   |   |____roughness
+|   |   |   |   |
+|   |   |   |   |____vector
+|   |   |   |
+|   |   |   |____frame-001
+|   |   |   |
+|   |   |   |____frame-...
+|   |   |   |
+|   |   |   |____frame-099
+|   |   |
+|   |   |____seq-001
+|   |   |
+|   |   |____seq-...
+|   |   |
+|   |   |____seq-015
+|   |
+|   |____test
+|       |
+|       |____seq-000
+|       |
+|       |____seq-...
+|       |
+|       |____seq-003
+|
+|____900p
+    |
+    |____train
+    |
+    |____test
+```
+
+See [model/data.py](https://github.com/ndming/NSRT/blob/main/model/data.py) for more details.
 
 ## Training
 
@@ -48,8 +113,8 @@ strides increase the number of training examples.
 ### model
 - `convo-features`: the number of intermediate feature maps accross convolutional layers.
 - `frame-channels`: the number of channels in a frame when inputs are fed to the network. If the network is trained 
-using diffuse, specular, normal, and depth maps, then the number of channels to specify will be 10 = 3 + 3 + 3 + 1.
-- `context-length`: the number of previous PLUS the current frame to consider for temporal context.
+using diffuse (3), specular (3), normal (3), albedo (3) and depth (1) maps, then the number of channels to specify is 13.
+- `context-length`: the number of previous frames PLUS the current frame to consider for temporal context.
 
 ### A training config example
 ```ini
